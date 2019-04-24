@@ -59,7 +59,7 @@ class Client:
         client_version = struct.unpack('>HBB', struct.pack('>I', message.version))
         self._server._log.debug('Client {} version: {}.{}.{}'.format(self._address, *client_version))
         if client_version < (1, 2, 4):
-            self._server._log.error('Version mismatch! Our version is {}.{}.{}. Killing connection...'.format(*PROTOCOL_VERSION))
+            self._server._log.error('Version mismatch! Our version is {}.{}.{}, client version is {}.{}.{}. Killing connection...'.format(*PROTOCOL_VERSION, *client_version))
             # TODO: send Reject message
             self.disconnect()
 
@@ -76,6 +76,7 @@ class Client:
         password = message.password
         celt_versions = message.celt_versions
         opus = message.opus
+        # TODO: add some kind of authentication. also, check user certificates if registered, but that's probably earlier in the process
 
     # message type 3
     def _message_handler_ping(self, payload):
