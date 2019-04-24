@@ -36,13 +36,34 @@ class Server:
             try:
                 client_socket, address = self._tcp_socket.accept()
                 client_socket.settimeout(60)
-                self.clients[address] = Client(self, client_socket, address)
+                client = Client(self, client_socket, address)
+                self.clients[address] = client
             except OSError:
                 # socket closed; probably ran self.stop()
                 self.running = False
 
     def _listen_udp(self):
         pass
+
+    def _send_payload(self, message_type, payload, clients=()):
+        """
+        Sends a message to the specified clients. If no clients are specified, sends the message to all clients.
+
+        Args:
+            message_type(int): protocol message type defined in MessageType enum
+            payload(protobuf message): the protobuf message object to send
+            clients(iterable): list of Clients to send the mssage to
+
+        Returns:
+            None
+        """
+        if len(clients) == 0:
+            clients = self.clients
+        for client in clients:
+            try:
+                client._send_payload(message_type, payload)
+            except OSError:
+                return False
 
     def is_alive(self):
         return self.running
