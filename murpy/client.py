@@ -1,3 +1,5 @@
+import os
+
 import select
 import socket
 import struct
@@ -7,7 +9,7 @@ from threading import Thread
 from murpy import mumble_pb2
 from murpy.channel import Channel
 from murpy.constants import ConnectionState, MessageType, PROTOCOL_VERSION, RELEASE_STRING, OS_STRING, \
-    OS_VERSION_STRING, EventType
+    OS_VERSION_STRING, EventType, Permission
 from murpy.event import Event
 
 
@@ -25,6 +27,7 @@ class Client:
         self._server = server
         self._socket = client_socket
         self._address = address
+        self._session_id = None
         self._message_handlers = {MessageType.VERSION: self._message_handler_version,
                                   MessageType.AUTHENTICATE: self._message_handler_authenticate,
                                   MessageType.UDPTUNNEL: self._message_handler_udp_tunnel,
@@ -52,6 +55,10 @@ class Client:
         version_response.os_version = OS_VERSION_STRING
         self._send_payload(MessageType.VERSION, version_response)
 
+    @property
+    def username(self):
+        return self._username
+
     # message type 0
     def _message_handler_version(self, payload):
         message = mumble_pb2.Version()
@@ -60,7 +67,10 @@ class Client:
         self._server._log.debug('Client {} version: {}.{}.{}'.format(self._address, *client_version))
         if client_version < (1, 2, 4):
             self._server._log.error('Version mismatch! Our version is {}.{}.{}, client version is {}.{}.{}. Killing connection...'.format(*PROTOCOL_VERSION, *client_version))
-            # TODO: send Reject message
+            reject_response = mumble_pb2.Reject()
+            reject_response.type = reject_response.WrongVersion
+            reject_response.reason = 'Your Mumble version is incompatible with this server.'
+            self._send_payload(MessageType.REJECT, reject_response)
             self.disconnect()
 
     # message type 1 -- UDPTunnel
@@ -74,9 +84,58 @@ class Client:
         message.ParseFromString(payload)
         username = message.username
         password = message.password
-        celt_versions = message.celt_versions
         opus = message.opus
-        # TODO: add some kind of authentication. also, check user certificates if registered, but that's probably earlier in the process
+        if not opus:
+            self._server._log.error('Codec mismatch! Client does not support Opus. Killing connection...')
+            self.disconnect()
+        if username == "SuperUser":
+            # TODO: handle SuperUser stuff
+            pass
+        if username in self._server._registered_users:
+            # TODO: add some kind of authentication. also, check if this username is registered. if so, verify cert matches
+            pass
+        # at this point, the client is authenticated
+        # send them CryptSetup, CodecVersion, ChannelStates, PermissionQuerys, UserStates, ServerSync, and ServerConfig
+        self._username = username
+        self._session_id = self._server.add_user(self)
+        crypt_setup_response = mumble_pb2.CryptSetup()
+        self._encryption_key = os.urandom(32)
+        self._client_nonce = os.urandom(16)
+        self._server_nonce = os.urandom(16)
+        crypt_setup_response.key = self._encryption_key
+        crypt_setup_response.client_nonce = self._client_nonce
+        crypt_setup_response.server_nonce = self._server_nonce
+        self._send_payload(MessageType.CRYPTSETUP, crypt_setup_response)
+        codec_version_response = mumble_pb2.CodecVersion()
+        codec_version_response.opus = True
+        codec_version_response.prefer_alpha = True
+        codec_version_response.alpha = -2147483637
+        codec_version_response.beta = 0
+        self._send_payload(MessageType.CODECVERSION, codec_version_response)
+        for channel_id, channel in enumerate(self._server.channels):
+            channel_state_response = mumble_pb2.ChannelState()
+            channel_state_response.channel_id = channel_id
+            channel_state_response.name = channel['name']
+            self._send_payload(MessageType.CHANNELSTATE, channel_state_response)
+            # TODO
+        # TODO: PermissionQuery messages
+        for client_id, client in enumerate(self._server.clients):
+            user_state_response = mumble_pb2.UserState()
+            user_state_response.session = client_id
+            user_state_response.name = client.username
+            self._send_payload(MessageType.USERSTATE, user_state_response)
+            # TODO
+        server_sync_response = mumble_pb2.ServerSync()
+        server_sync_response.session = self._session_id
+        server_sync_response.welcome_text = "TEMP WELCOME TEXT"  # TODO: make configurable
+        server_sync_response.permissions = Permission.ALL
+        self._send_payload(MessageType.SERVERSYNC, server_sync_response)
+        server_config_response = mumble_pb2.ServerConfig()
+        server_config_response.max_bandwidth = 2048
+        server_config_response.message_length = 104768
+        server_config_response.image_message_length = 104768
+        server_config_response.max_users = 32
+        self._send_payload(MessageType.SERVERCONFIG, server_config_response)
 
     # message type 3
     def _message_handler_ping(self, payload):

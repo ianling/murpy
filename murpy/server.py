@@ -9,7 +9,9 @@ from murpy.client import Client
 class Server:
     def __init__(self, certfile, keyfile, keypassword=None, host='0.0.0.0', port=64738):
         self.running = True
-        self.clients = {}
+        self.clients = []
+        self.channels = [{'name': 'Root'}]
+        self._registered_users = []
         self._host = host
         self._port = port
         self._log = logging.getLogger(f'Murpy@{self._host}:{self._port}')
@@ -37,7 +39,6 @@ class Server:
                 client_socket, address = self._tcp_socket.accept()
                 client_socket.settimeout(60)
                 client = Client(self, client_socket, address)
-                self.clients[address] = client
             except OSError:
                 # socket closed; probably ran self.stop()
                 self.running = False
@@ -64,6 +65,16 @@ class Server:
                 client._send_payload(message_type, payload)
             except OSError:
                 return False
+
+    def add_user(self, client_object):
+        """
+        Adds a user to the list of users.
+
+        Returns:
+            int: the session ID of the new user
+        """
+        self.clients.append(client_object)
+        return len(self.clients) - 1
 
     def is_alive(self):
         return self.running
