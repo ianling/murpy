@@ -9,7 +9,8 @@ from murpy.client import Client
 class Server:
     def __init__(self, certfile, keyfile, keypassword=None, host='0.0.0.0', port=64738):
         self.running = True
-        self.clients = []
+        self.clients = {}
+        self._last_session_id = -1
         self.channels = [{'name': 'Root'}]
         self._registered_users = []
         self._host = host
@@ -18,11 +19,9 @@ class Server:
         self._certfile = certfile
         self._keyfile = keyfile
         self._keypassword = keypassword
-        tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ssl_context = SSLContext(PROTOCOL_TLS)
-        if self._certfile is not None:
-            ssl_context.load_cert_chain(self._certfile, keyfile=self._keyfile, password=self._keypassword)
-        self._tcp_socket = ssl_context.wrap_socket(tcp_socket)
+        self._ssl_context = SSLContext(PROTOCOL_TLS)
+        self._ssl_context.load_cert_chain(certfile=self._certfile, keyfile=self._keyfile, password=self._keypassword)
+        self._tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._tcp_socket.bind((self._host, self._port))
         self._udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -37,8 +36,10 @@ class Server:
         while self.running:
             try:
                 client_socket, address = self._tcp_socket.accept()
+                client_socket = self._ssl_context.wrap_socket(client_socket, server_side=True)
+                print("SSL established. Peer: {}".format(client_socket.getpeercert()))
                 client_socket.settimeout(60)
-                client = Client(self, client_socket, address)
+                self.add_user(client_socket, address)
             except OSError:
                 # socket closed; probably ran self.stop()
                 self.running = False
@@ -66,15 +67,20 @@ class Server:
             except OSError:
                 return False
 
-    def add_user(self, client_object):
+    def add_user(self, socket, address):
         """
         Adds a user to the list of users.
-
-        Returns:
-            int: the session ID of the new user
         """
-        self.clients.append(client_object)
-        return len(self.clients) - 1
+        session_id = self._last_session_id + 1
+        self._last_session_id = session_id
+        new_client = Client(session_id, self, socket, address)
+        self.clients[session_id] = new_client
+
+    def remove_user(self, client):
+        """
+        Removes a user from the list of users.
+        """
+        del(self.clients[client._session_id])
 
     def is_alive(self):
         return self.running

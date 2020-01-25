@@ -14,7 +14,7 @@ from murpy.event import Event
 
 
 class Client:
-    def __init__(self, server, client_socket, address):
+    def __init__(self, session_id, server, client_socket, address):
         """
         An object for keeping track of client connections to the server.
 
@@ -27,7 +27,7 @@ class Client:
         self._server = server
         self._socket = client_socket
         self._address = address
-        self._session_id = None
+        self._session_id = session_id
         self._message_handlers = {MessageType.VERSION: self._message_handler_version,
                                   MessageType.AUTHENTICATE: self._message_handler_authenticate,
                                   MessageType.UDPTUNNEL: self._message_handler_udp_tunnel,
@@ -58,6 +58,9 @@ class Client:
     @property
     def username(self):
         return self._username
+
+    def get_cert(self):
+        return self._socket.getpeercert()
 
     # message type 0
     def _message_handler_version(self, payload):
@@ -97,7 +100,6 @@ class Client:
         # at this point, the client is authenticated
         # send them CryptSetup, CodecVersion, ChannelStates, PermissionQuerys, UserStates, ServerSync, and ServerConfig
         self._username = username
-        self._session_id = self._server.add_user(self)
         crypt_setup_response = mumble_pb2.CryptSetup()
         self._encryption_key = os.urandom(32)
         self._client_nonce = os.urandom(16)
@@ -119,9 +121,9 @@ class Client:
             self._send_payload(MessageType.CHANNELSTATE, channel_state_response)
             # TODO
         # TODO: PermissionQuery messages
-        for client_id, client in enumerate(self._server.clients):
+        for session_id, client in self._server.clients.items():
             user_state_response = mumble_pb2.UserState()
-            user_state_response.session = client_id
+            user_state_response.session = session_id
             user_state_response.name = client.username
             self._send_payload(MessageType.USERSTATE, user_state_response)
             # TODO
@@ -269,12 +271,12 @@ class Client:
             for input_socket in inputs:
                 try:
                     self._tcp_message_buffer += input_socket.recv(4096)
-                except OSError:
-                    self._server._log.debug(f"TCP socket died for client {self._address}")
-                    self.connected = False
-                    continue
                 except socket.timeout:
                     self._server._log.debug(f"Client {self._address} timed out")
+                    self.connected = False
+                    continue
+                except OSError:
+                    self._server._log.debug(f"TCP socket died for client {self._address}")
                     self.connected = False
                     continue
                 if len(self._tcp_message_buffer) == 0:  # connection closed by server
@@ -295,9 +297,11 @@ class Client:
                     try:
                         self._message_handlers[message_type](message_payload)
                     except Exception as e:
-                        self._server._log.warning(f'Caught exception ({e}) while handling message type {message_type}, \n'
-                                                  f'message = {message_payload} \n',
+                        self._server._log.warning(f'Exception ({e}) while handling message type {message_type},\n'
+                                                  f'message = {message_payload}\n',
                                                   f'exception = {traceback.format_exc()}')
+        # remove self from the server if this client disconnected
+        self._server.remove_user(self)
 
     def _send_payload(self, message_type, payload):
         packet = struct.pack('!HL', message_type, payload.ByteSize()) + payload.SerializeToString()
